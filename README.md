@@ -24,6 +24,27 @@ go run .
 
 ## 已公开的入口
 
+### `POST /api/v1/subjects/{id}/versions`
+
+为主题 `{id}` 注册一个新的结构版本。请求体是 JSON 对象：
+
+```json
+{"schema":"{\"fields\":{\"id\":\"string\"},\"required\":[\"id\"]}","compatibility":"BACKWARD"}
+```
+
+- `schema`：结构定义字符串，本身必须解析为含 `fields` 与 `required` 的 JSON 对象；`fields` 把字段名映射到类型字符串，`required` 是其中字段名的子集。
+- `compatibility`：`NONE`、`BACKWARD`、`FORWARD`、`FULL` 之一。
+
+版本号按主题在事务内从 1 连续分配，并发注册不会重复或跳号。成功时 HTTP 201：
+
+```json
+{"subject":"user-events","schema":"{\"fields\":{\"id\":\"string\"},\"required\":[\"id\"]}","version":1,"compatibility":"BACKWARD"}
+```
+
+同主题相邻版本按兼容级别检查：`NONE` 不检查；`BACKWARD` 允许新增可选字段或删除可选字段，禁止删除必填字段、改变同名字段类型、把可选改为必填；`FORWARD` 允许新增字段或把必填改为可选，禁止删除字段、改变类型、把可选改为必填；`FULL` 同时满足两者。违反时返回 HTTP 409 且 `code` 为 `incompatible_schema`，不写入新版本也不改旧版本。
+
+请求校验失败时均返回 HTTP 400：请求体不是合法 JSON 时 `code` 为 `invalid_request`；缺少 `schema` 或 `compatibility` 时为 `missing_field`；`schema` 形状无效时为 `invalid_schema`；`compatibility` 非法时为 `invalid_compatibility`。
+
 ### `GET /healthz`
 
 返回服务与存储状态。正常时 HTTP 200：
