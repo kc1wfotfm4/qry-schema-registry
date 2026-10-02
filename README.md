@@ -38,6 +38,35 @@ go run .
 {"error":{"code":"storage_unavailable","message":"database is not available"}}
 ```
 
+### `POST /api/v1/subjects/{id}/versions`
+
+为编号为 `{id}` 的主题注册新的结构版本。请求体是 JSON 对象：
+
+```json
+{"schema":"{\"fields\":{\"id\":\"string\"},\"required\":[\"id\"]}","compatibility":"BACKWARD"}
+```
+
+- `schema`：结构定义字符串，必须能解析为含 `fields` 与 `required` 的 JSON 对象；`fields` 把字段名映射到类型字符串，`required` 是其中字段名的子集。
+- `compatibility`：`NONE`、`BACKWARD`、`FORWARD`、`FULL` 之一。
+
+版本号按主题从事务内从 1 连续分配，并发注册不会重复或跳号；`schema` 原样持久化。成功时返回 HTTP 201：
+
+```json
+{"subject":1,"schema":"{\"fields\":{\"id\":\"string\"},\"required\":[\"id\"]}","version":1,"compatibility":"BACKWARD"}
+```
+
+错误响应（均为顶层 `error` 对象）：
+
+| 场景 | HTTP | code |
+|---|---|---|
+| 请求体不是合法 JSON | 400 | `invalid_request` |
+| 缺少 `schema` 或 `compatibility` | 400 | `missing_field` |
+| `schema` 形状无效 | 400 | `invalid_schema` |
+| `compatibility` 非法 | 400 | `invalid_compatibility` |
+| 违反与同主题上一版本的兼容级别 | 409 | `incompatible_schema` |
+
+兼容检查只比较同主题相邻两个版本：`NONE` 不检查；`BACKWARD` 允许新增可选字段、删除可选字段，禁止删除必填字段、改变同名字段类型、可选改必填、新增必填字段；`FORWARD` 允许新增字段、必填改可选，禁止删除字段、改变类型、可选改必填；`FULL` 要求两者同时满足。违反时不写入新版本，旧版本保持不变。
+
 ## 错误约定
 
 所有错误响应都是单个顶层 `error` 对象，包含 `code` 与 `message` 两个字符串字段；`message` 不包含 SQL、堆栈或文件路径。
