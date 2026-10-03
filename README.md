@@ -67,6 +67,34 @@ go run .
 
 兼容检查只比较同主题相邻两个版本：`NONE` 不检查；`BACKWARD` 允许新增可选字段、删除可选字段，禁止删除必填字段、改变同名字段类型、可选改必填、新增必填字段；`FORWARD` 允许新增字段、必填改可选，禁止删除字段、改变类型、可选改必填；`FULL` 要求两者同时满足。违反时不写入新版本，旧版本保持不变。
 
+### `GET /api/v1/subjects`
+
+列出至少注册过一个版本的全部主题的编号。成功时返回 HTTP 200：
+
+```json
+{"subjects":[3,9]}
+```
+
+`subjects` 按数值升序且不重复；尚无记录时为 `{"subjects":[]}`。该入口只读取已有记录，不接受会影响结果的参数。
+
+### `GET /api/v1/subjects/{id}/versions/{v}`
+
+读取编号为 `{id}` 的主题的第 `{v}` 个版本。成功时返回 HTTP 200：
+
+```json
+{"subject":9,"schema":"{\"fields\":{\"id\":\"string\"},\"required\":[\"id\"]}","version":1,"compatibility":"NONE"}
+```
+
+`subject` 与 `version` 是整数，`schema` 与 `compatibility` 保持注册时的原始值。该入口只读取已有记录，不生成版本，也不重新计算兼容结果。
+
+错误响应（均为顶层 `error` 对象）：
+
+| 场景 | HTTP | code |
+|---|---|---|
+| `{id}` 或 `{v}` 不是十进制整数 | 400 | `invalid_request` |
+| 主题没有任何版本 | 404 | `subject_not_found` |
+| 主题存在但指定版本不存在 | 404 | `version_not_found` |
+
 ## 错误约定
 
 所有错误响应都是单个顶层 `error` 对象，包含 `code` 与 `message` 两个字符串字段；`message` 不包含 SQL、堆栈或文件路径。

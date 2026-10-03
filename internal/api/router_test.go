@@ -32,6 +32,14 @@ func postVersion(t *testing.T, router *gin.Engine, subject string, body string) 
 	return recorder
 }
 
+func get(t *testing.T, router *gin.Engine, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, path, nil)
+	router.ServeHTTP(recorder, request)
+	return recorder
+}
+
 func decodeBody(t *testing.T, recorder *httptest.ResponseRecorder) map[string]any {
 	t.Helper()
 	var decoded map[string]any
@@ -171,4 +179,96 @@ func TestRegisterVersionEnforcesCompatibility(t *testing.T) {
 	if got := decodeBody(t, recorder)["version"]; got != float64(2) {
 		t.Fatalf("version = %v, want 2: rejected attempt must not consume a number", got)
 	}
+}
+
+func TestListSubjectsEmptyStore(t *testing.T) {
+	router, _ := newTestRouter(t)
+	recorder := get(t, router, "/api/v1/subjects")
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body %s)", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if got := recorder.Body.String(); got != `{"subjects":[]}` {
+		t.Fatalf("body = %s, want empty subjects array", got)
+	}
+}
+
+func TestListSubjectsSortedUnique(t *testing.T) {
+	router, _ := newTestRouter(t)
+	body := `{"schema":"{\"fields\":{},\"required\":[]}","compatibility":"NONE"}`
+	for _, subject := range []string{"9", "3", "9", "12", "3"} {
+		if recorder := postVersion(t, router, subject, body); recorder.Code != http.StatusCreated {
+			t.Fatalf("register subject %s status = %d (body %s)", subject, recorder.Code, recorder.Body.String())
+		}
+	}
+
+	recorder := get(t, router, "/api/v1/subjects")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body %s)", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	decoded := decodeBody(t, recorder)
+	subjects, ok := decoded["subjects"].([]any)
+	if !ok {
+		t.Fatalf("subjects = %v, want array", decoded["subjects"])
+	}
+	want := []float64{3, 9, 12}
+	if len(subjects) != len(want) {
+		t.Fatalf("subjects = %v, want %v", subjects, want)
+	}
+	for i := range want {
+		if subjects[i] != want[i] {
+			t.Fatalf("subjects = %v, want %v", subjects, want)
+		}
+	}
+}
+
+func TestGetVersionReturnsRegisteredRecord(t *testing.T) {
+	router, _ := newTestRouter(t)
+	schemaText := `{"fields":{"id":"string"},"required":["id"]}`
+	body := fmt.Sprintf(`{"schema":%q,"compatibility":"FULL"}`, schemaText)
+	if recorder := postVersion(t, router, "7", body); recorder.Code != http.StatusCreated {
+		t.Fatalf("register status = %d (body %s)", recorder.Code, recorder.Body.String())
+	}
+
+	recorder := get(t, router, "/api/v1/subjects/7/versions/1")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body %s)", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	decoded := decodeBody(t, recorder)
+	if decoded["subject"] != float64(7) {
+		t.Fatalf("subject = %v, want 7", decoded["subject"])
+	}
+	if decoded["version"] != float64(1) {
+		t.Fatalf("version = %v, want 1", decoded["version"])
+	}
+	if decoded["schema"] != schemaText {
+		t.Fatalf("schema = %v, want %v", decoded["schema"], schemaText)
+	}
+	if decoded["compatibility"] != "FULL" {
+		t.Fatalf("compatibility = %v, want FULL", decoded["compatibility"])
+	}
+}
+
+func TestGetVersionRejectsNonNumericParams(t *testing.T) {
+	router, _ := newTestRouter(t)
+	body := `{"schema":"{\"fields\":{},\"required\":[]}","compatibility":"NONE"}`
+	if recorder := postVersion(t, router, "7", body); recorder.Code != http.StatusCreated {
+		t.Fatalf("register status = %d (body %s)", recorder.Code, recorder.Body.String())
+	}
+
+	requireError(t, get(t, router, "/api/v1/subjects/abc/versions/1"), http.StatusBadRequest, "invalid_request")
+	requireError(t, get(t, router, "/api/v1/subjects/7/versions/one"), http.StatusBadRequest, "invalid_request")
+	requireError(t, get(t, router, "/api/v1/subjects/7/versions/1.5"), http.StatusBadRequest, "invalid_request")
+}
+
+func TestGetVersionDistinguishesMissingSubjectAndVersion(t *testing.T) {
+	router, _ := newTestRouter(t)
+	requireError(t, get(t, router, "/api/v1/subjects/7/versions/1"), http.StatusNotFound, "subject_not_found")
+
+	body := `{"schema":"{\"fields\":{},\"required\":[]}","compatibility":"NONE"}`
+	if recorder := postVersion(t, router, "7", body); recorder.Code != http.StatusCreated {
+		t.Fatalf("register status = %d (body %s)", recorder.Code, recorder.Body.String())
+	}
+	requireError(t, get(t, router, "/api/v1/subjects/7/versions/2"), http.StatusNotFound, "version_not_found")
+	requireError(t, get(t, router, "/api/v1/subjects/8/versions/1"), http.StatusNotFound, "subject_not_found")
 }

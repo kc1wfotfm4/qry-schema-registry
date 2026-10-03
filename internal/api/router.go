@@ -13,8 +13,8 @@ import (
 	"github.com/kc1wfotfm4/qry-schema-registry/internal/store"
 )
 
-// NewRouter wires the public HTTP surface. Only the health entry is published today; the service
-// contract in README.md describes the error shape every entry must keep.
+// NewRouter wires the public HTTP surface. The service contract in README.md
+// describes the error shape every entry must keep.
 func NewRouter(st *store.Store) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
@@ -97,6 +97,48 @@ func NewRouter(st *store.Store) *gin.Engine {
 			"schema":        schemaText,
 			"version":       version,
 			"compatibility": compatibility,
+		})
+	})
+
+	router.GET("/api/v1/subjects", func(c *gin.Context) {
+		subjects, err := st.ListSubjects()
+		if err != nil {
+			writeError(c, http.StatusInternalServerError, "internal_error", "the subjects could not be listed")
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"subjects": subjects})
+	})
+
+	router.GET("/api/v1/subjects/:id/versions/:v", func(c *gin.Context) {
+		subject, err := strconv.ParseInt(c.Param("id"), 10, 64)
+		if err != nil {
+			writeError(c, http.StatusBadRequest, "invalid_request", "subject id must be an integer")
+			return
+		}
+		version, err := strconv.ParseInt(c.Param("v"), 10, 64)
+		if err != nil {
+			writeError(c, http.StatusBadRequest, "invalid_request", "version must be an integer")
+			return
+		}
+
+		record, err := st.GetVersion(subject, version)
+		if err != nil {
+			switch {
+			case errors.Is(err, store.ErrSubjectNotFound):
+				writeError(c, http.StatusNotFound, "subject_not_found", "subject has no registered versions")
+			case errors.Is(err, store.ErrVersionNotFound):
+				writeError(c, http.StatusNotFound, "version_not_found", "subject has no such version")
+			default:
+				writeError(c, http.StatusInternalServerError, "internal_error", "the version could not be read")
+			}
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"subject":       record.Subject,
+			"schema":        record.Schema,
+			"version":       record.Version,
+			"compatibility": record.Compatibility,
 		})
 	})
 

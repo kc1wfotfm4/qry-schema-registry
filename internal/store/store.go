@@ -1,16 +1,31 @@
-// Package store owns the SQLite file and every write the service performs.
+// Package store owns the SQLite file and every read and write the service performs.
 package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 
 	_ "modernc.org/sqlite"
 )
 
+// Lookup failures reported by GetVersion.
+var (
+	ErrSubjectNotFound = errors.New("subject has no registered versions")
+	ErrVersionNotFound = errors.New("subject has no such version")
+)
+
 // Store wraps the SQLite handle so callers never touch database/sql directly.
 type Store struct {
 	db *sql.DB
+}
+
+// Version is one stored schema version exactly as it was registered.
+type Version struct {
+	Subject       int64
+	Version       int64
+	Schema        string
+	Compatibility string
 }
 
 // Open prepares the database file and the schema this service needs.
@@ -38,6 +53,52 @@ func (s *Store) Ping() error { return s.db.Ping() }
 
 // Close releases the database handle.
 func (s *Store) Close() error { return s.db.Close() }
+
+// ListSubjects returns every subject with at least one registered version, in
+// ascending numeric order and without duplicates.
+func (s *Store) ListSubjects() ([]int64, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT subject FROM schema_versions ORDER BY subject ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list subjects: %w", err)
+	}
+	defer rows.Close()
+
+	subjects := make([]int64, 0)
+	for rows.Next() {
+		var subject int64
+		if err := rows.Scan(&subject); err != nil {
+			return nil, fmt.Errorf("scan subject: %w", err)
+		}
+		subjects = append(subjects, subject)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list subjects: %w", err)
+	}
+	return subjects, nil
+}
+
+// GetVersion returns the stored record for one subject version. It reports
+// ErrSubjectNotFound when the subject has no versions at all and
+// ErrVersionNotFound when the subject exists but the version does not.
+func (s *Store) GetVersion(subject, version int64) (Version, error) {
+	record := Version{Subject: subject, Version: version}
+	err := s.db.QueryRow(`SELECT schema, compatibility FROM schema_versions WHERE subject = ? AND version = ?`, subject, version).Scan(&record.Schema, &record.Compatibility)
+	if err == nil {
+		return record, nil
+	}
+	if err != sql.ErrNoRows {
+		return Version{}, fmt.Errorf("read version: %w", err)
+	}
+
+	var exists bool
+	if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM schema_versions WHERE subject = ?)`, subject).Scan(&exists); err != nil {
+		return Version{}, fmt.Errorf("check subject: %w", err)
+	}
+	if !exists {
+		return Version{}, ErrSubjectNotFound
+	}
+	return Version{}, ErrVersionNotFound
+}
 
 // RegisterVersion stores schema as the next consecutive version for subject and
 // returns the assigned version number. When the subject already has versions,
