@@ -113,3 +113,87 @@ func TestRegisterVersionConcurrentRegistrationsStayDense(t *testing.T) {
 		}
 	}
 }
+
+func TestListSubjectsReturnsSortedUniqueSubjects(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "store.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	subjects, err := st.ListSubjects()
+	if err != nil {
+		t.Fatalf("list empty: %v", err)
+	}
+	if subjects == nil || len(subjects) != 0 {
+		t.Fatalf("empty subjects = %v, want non-nil empty slice", subjects)
+	}
+
+	for _, subject := range []int64{9, 3, 9, 5, 3} {
+		if _, err := st.RegisterVersion(subject, `{"fields":{},"required":[]}`, "NONE", nil); err != nil {
+			t.Fatalf("register subject %d: %v", subject, err)
+		}
+	}
+
+	subjects, err = st.ListSubjects()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	want := []int64{3, 5, 9}
+	if len(subjects) != len(want) {
+		t.Fatalf("subjects = %v, want %v", subjects, want)
+	}
+	for i := range want {
+		if subjects[i] != want[i] {
+			t.Fatalf("subjects = %v, want %v", subjects, want)
+		}
+	}
+}
+
+func TestGetVersionReturnsStoredRecord(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "store.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	if _, err := st.RegisterVersion(4, `{"fields":{"a":"string"},"required":["a"]}`, "FULL", nil); err != nil {
+		t.Fatalf("register first: %v", err)
+	}
+	if _, err := st.RegisterVersion(4, `{"fields":{"a":"string"},"required":[]}`, "BACKWARD", nil); err != nil {
+		t.Fatalf("register second: %v", err)
+	}
+
+	schema, compatibility, err := st.GetVersion(4, 1)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if schema != `{"fields":{"a":"string"},"required":["a"]}` {
+		t.Fatalf("schema = %q", schema)
+	}
+	if compatibility != "FULL" {
+		t.Fatalf("compatibility = %q", compatibility)
+	}
+}
+
+func TestGetVersionDistinguishesMissingSubjectAndVersion(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "store.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	if _, _, err := st.GetVersion(1, 1); !errors.Is(err, ErrSubjectNotFound) {
+		t.Fatalf("empty store err = %v, want ErrSubjectNotFound", err)
+	}
+
+	if _, err := st.RegisterVersion(1, `{"fields":{},"required":[]}`, "NONE", nil); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, _, err := st.GetVersion(1, 2); !errors.Is(err, ErrVersionNotFound) {
+		t.Fatalf("missing version err = %v, want ErrVersionNotFound", err)
+	}
+	if _, _, err := st.GetVersion(2, 1); !errors.Is(err, ErrSubjectNotFound) {
+		t.Fatalf("missing subject err = %v, want ErrSubjectNotFound", err)
+	}
+}

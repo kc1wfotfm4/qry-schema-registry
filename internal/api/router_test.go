@@ -32,6 +32,14 @@ func postVersion(t *testing.T, router *gin.Engine, subject string, body string) 
 	return recorder
 }
 
+func getPath(t *testing.T, router *gin.Engine, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, path, nil)
+	router.ServeHTTP(recorder, request)
+	return recorder
+}
+
 func decodeBody(t *testing.T, recorder *httptest.ResponseRecorder) map[string]any {
 	t.Helper()
 	var decoded map[string]any
@@ -170,5 +178,98 @@ func TestRegisterVersionEnforcesCompatibility(t *testing.T) {
 	}
 	if got := decodeBody(t, recorder)["version"]; got != float64(2) {
 		t.Fatalf("version = %v, want 2: rejected attempt must not consume a number", got)
+	}
+}
+
+func TestListSubjectsEmptyReturnsEmptyArray(t *testing.T) {
+	router, _ := newTestRouter(t)
+	recorder := getPath(t, router, "/api/v1/subjects")
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if got := recorder.Body.String(); got != `{"subjects":[]}` {
+		t.Fatalf("body = %s, want empty subjects array", got)
+	}
+}
+
+func TestListSubjectsReturnsSortedUniqueSubjects(t *testing.T) {
+	router, _ := newTestRouter(t)
+	body := `{"schema":"{\"fields\":{},\"required\":[]}","compatibility":"NONE"}`
+	for _, subject := range []string{"9", "3", "9", "5", "3"} {
+		if recorder := postVersion(t, router, subject, body); recorder.Code != http.StatusCreated {
+			t.Fatalf("seed subject %s status = %d (body %s)", subject, recorder.Code, recorder.Body.String())
+		}
+	}
+
+	recorder := getPath(t, router, "/api/v1/subjects")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	decoded := decodeBody(t, recorder)
+	subjects, ok := decoded["subjects"].([]any)
+	if !ok {
+		t.Fatalf("subjects = %v, want array", decoded["subjects"])
+	}
+	want := []float64{3, 5, 9}
+	if len(subjects) != len(want) {
+		t.Fatalf("subjects = %v, want %v", subjects, want)
+	}
+	for i := range want {
+		if subjects[i] != want[i] {
+			t.Fatalf("subjects = %v, want %v", subjects, want)
+		}
+	}
+}
+
+func TestGetVersionReturnsRegisteredRecord(t *testing.T) {
+	router, _ := newTestRouter(t)
+	schemaText := `{"fields":{"id":"string"},"required":["id"]}`
+	body := fmt.Sprintf(`{"schema":%q,"compatibility":"BACKWARD"}`, schemaText)
+	if recorder := postVersion(t, router, "7", body); recorder.Code != http.StatusCreated {
+		t.Fatalf("seed status = %d (body %s)", recorder.Code, recorder.Body.String())
+	}
+
+	recorder := getPath(t, router, "/api/v1/subjects/7/versions/1")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body %s)", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	decoded := decodeBody(t, recorder)
+	if decoded["subject"] != float64(7) {
+		t.Fatalf("subject = %v, want 7", decoded["subject"])
+	}
+	if decoded["version"] != float64(1) {
+		t.Fatalf("version = %v, want 1", decoded["version"])
+	}
+	if decoded["schema"] != schemaText {
+		t.Fatalf("schema = %v, want %v", decoded["schema"], schemaText)
+	}
+	if decoded["compatibility"] != "BACKWARD" {
+		t.Fatalf("compatibility = %v, want BACKWARD", decoded["compatibility"])
+	}
+}
+
+func TestGetVersionRejectsMalformedAndMissingRecords(t *testing.T) {
+	router, _ := newTestRouter(t)
+	body := `{"schema":"{\"fields\":{},\"required\":[]}","compatibility":"NONE"}`
+	if recorder := postVersion(t, router, "7", body); recorder.Code != http.StatusCreated {
+		t.Fatalf("seed status = %d (body %s)", recorder.Code, recorder.Body.String())
+	}
+
+	cases := []struct {
+		name   string
+		path   string
+		status int
+		code   string
+	}{
+		{"non numeric subject", "/api/v1/subjects/abc/versions/1", http.StatusBadRequest, "invalid_request"},
+		{"non numeric version", "/api/v1/subjects/7/versions/latest", http.StatusBadRequest, "invalid_request"},
+		{"unknown subject", "/api/v1/subjects/8/versions/1", http.StatusNotFound, "subject_not_found"},
+		{"unknown version", "/api/v1/subjects/7/versions/2", http.StatusNotFound, "version_not_found"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			requireError(t, getPath(t, router, tc.path), tc.status, tc.code)
+		})
 	}
 }
